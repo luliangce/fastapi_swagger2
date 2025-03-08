@@ -1,17 +1,17 @@
 import http.client
 import inspect
+from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Type, Union, cast
 from urllib.parse import ParseResult, urlparse
 
 from fastapi import routing
 from fastapi._compat import (
+    PYDANTIC_V2,
     GenerateJsonSchema,
     JsonSchemaValue,
     ModelField,
     Undefined,
     get_compat_model_name_map,
-    get_definitions,
-    get_schema_from_model_field,
     lenient_issubclass,
 )
 from fastapi.datastructures import DefaultPlaceholder
@@ -29,6 +29,7 @@ from fastapi.params import Body, Param
 from fastapi.responses import Response
 from fastapi.types import ModelNameMap
 from fastapi.utils import deep_dict_update, is_body_allowed_for_status_code
+from pydantic import BaseModel
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute
 from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
@@ -36,6 +37,66 @@ from typing_extensions import Literal
 
 from fastapi_swagger2.constants import REF_PREFIX, REF_TEMPLATE
 from fastapi_swagger2.models import Swagger2
+
+if PYDANTIC_V2:
+    from fastapi._compat import get_definitions, get_schema_from_model_field
+else:
+    from pydantic.schema import (
+        field_schema,
+        get_flat_models_from_fields,
+        model_process_schema,
+    )
+
+    def get_model_definitions(
+        *,
+        flat_models: Set[Union[Type[BaseModel], Type[Enum]]],
+        model_name_map: Dict[Union[Type[BaseModel], Type[Enum]], str],
+    ) -> Dict[str, Any]:
+        definitions: Dict[str, Dict[str, Any]] = {}
+        for model in flat_models:
+            print(REF_PREFIX)
+            m_schema, m_definitions, m_nested_models = model_process_schema(
+                model, model_name_map=model_name_map, ref_prefix=REF_PREFIX
+            )
+            definitions.update(m_definitions)
+            model_name = model_name_map[model]
+            if "description" in m_schema:
+                m_schema["description"] = m_schema["description"].split("\f")[0]
+            definitions[model_name] = m_schema
+        return definitions
+
+    def get_definitions(
+        *,
+        fields: List[ModelField],
+        schema_generator: GenerateJsonSchema,
+        model_name_map: ModelNameMap,
+        separate_input_output_schemas: bool = True,
+    ) -> Tuple[
+        Dict[
+            Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue
+        ],
+        Dict[str, Dict[str, Any]],
+    ]:
+        models = get_flat_models_from_fields(fields, known_models=set())
+        return {}, get_model_definitions(
+            flat_models=models, model_name_map=model_name_map
+        )
+
+    def get_schema_from_model_field(
+        *,
+        field: ModelField,
+        schema_generator: GenerateJsonSchema,
+        model_name_map: ModelNameMap,
+        field_mapping: Dict[
+            Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue
+        ],
+        separate_input_output_schemas: bool = True,
+    ) -> Dict[str, Any]:
+        # This expects that GenerateJsonSchema was already used to generate the definitions
+        return field_schema(  # type: ignore[no-any-return]
+            field, model_name_map=model_name_map, ref_prefix=REF_PREFIX
+        )[0]
+
 
 validation_error_definition = {
     "title": "ValidationError",
